@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TradPlat</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2311151c'/><path d='M6 22l6-7 5 4 9-11' stroke='%2322c55e' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>TradPlat <span class="badge">PAPER</span></div>
+    <div class="tape" id="tape"></div>
+    <div class="acct-summary" id="acctSummary">
+      <div><label>Equity</label><span id="sumEquity">—</span></div>
+      <div><label>Buying power</label><span id="sumCash">—</span></div>
+      <div><label>Total P&amp;L</label><span id="sumPnl">—</span></div>
+      <button class="ghost" id="logoutBtn" title="Log out">⎋ <span id="userName"></span></button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel watchlist">
+      <h2>Markets</h2>
+      <table><thead><tr><th>Symbol</th><th class="r">Last</th><th class="r">Chg%</th></tr></thead>
+        <tbody id="watchlist"></tbody></table>
+      <p class="conn" id="conn"><span class="dot"></span><span>Connecting…</span></p>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="chart-head">
+        <div>
+          <div class="sym" id="chartSym">—</div>
+          <div class="sym-name" id="chartName"></div>
+        </div>
+        <div class="big-last" id="chartLast">—</div>
+        <div class="stat"><label>Change</label><span id="chartChg">—</span></div>
+        <div class="stat"><label>High</label><span id="chartHigh">—</span></div>
+        <div class="stat"><label>Low</label><span id="chartLow">—</span></div>
+        <div class="stat"><label>Volume</label><span id="chartVol">—</span></div>
+        <div class="stat"><label>Spread</label><span id="chartSpread">—</span></div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart"></canvas><div class="ohlc" id="ohlc"></div></div>
+    </section>
+
+    <section class="panel book-panel">
+      <h2>Order book <span class="hint">click a price to use it</span></h2>
+      <div class="book-cols"><span>Price</span><span class="r">Size</span><span class="r">Total</span></div>
+      <div class="book" id="asks"></div>
+      <div class="spread-row" id="spreadRow">—</div>
+      <div class="book" id="bids"></div>
+    </section>
+
+    <section class="panel trades-panel">
+      <h2>Trades</h2>
+      <div class="book-cols"><span>Price</span><span class="r">Size</span><span class="r">Time</span></div>
+      <div class="trades" id="trades"></div>
+    </section>
+
+    <section class="panel ticket">
+      <div class="side-toggle">
+        <button data-side="buy" class="active buy">Buy</button>
+        <button data-side="sell" class="sell">Sell</button>
+      </div>
+      <form id="orderForm" autocomplete="off">
+        <label>Order type
+          <select id="fType">
+            <option value="limit">Limit</option>
+            <option value="market">Market</option>
+            <option value="stop">Stop (market)</option>
+            <option value="stop_limit">Stop limit</option>
+          </select>
+        </label>
+        <label data-for="stop">Stop price ($)<input id="fStop" type="number" step="0.01" min="0.01" inputmode="decimal"></label>
+        <label data-for="price">Limit price ($)<input id="fPrice" type="number" step="0.01" min="0.01" inputmode="decimal"></label>
+        <label>Quantity (shares)<input id="fQty" type="number" step="1" min="1" value="10" inputmode="numeric"></label>
+        <div class="qty-chips" id="qtyChips">
+          <button type="button" data-pct="0.1">10%</button><button type="button" data-pct="0.25">25%</button>
+          <button type="button" data-pct="0.5">50%</button><button type="button" data-pct="1">Max</button>
+        </div>
+        <label data-for="tif">Time in force
+          <select id="fTif"><option value="GTC">GTC — good till cancelled</option><option value="IOC">IOC — immediate or cancel</option></select>
+        </label>
+        <dl class="est">
+          <div><dt>Estimated value</dt><dd id="estCost">—</dd></div>
+          <div><dt id="availLabel">Buying power</dt><dd id="estAvail">—</dd></div>
+        </dl>
+        <button type="submit" class="submit buy" id="submitBtn">Buy</button>
+        <p class="form-msg" id="formMsg"></p>
+      </form>
+    </section>
+
+    <section class="panel bottom">
+      <nav class="tabs" id="tabs">
+        <button data-tab="positions" class="active">Positions <span id="cntPos"></span></button>
+        <button data-tab="open">Open orders <span id="cntOpen"></span></button>
+        <button data-tab="history">Order history</button>
+        <button data-tab="fills">Fills</button>
+        <button class="ghost cancel-all" id="cancelAll">Cancel all</button>
+      </nav>
+      <div class="tab-body" id="tabBody"></div>
+    </section>
+  </main>
+
+  <div class="modal" id="loginModal">
+    <form class="login" id="loginForm">
+      <div class="brand big"><span class="logo"></span>TradPlat</div>
+      <p class="muted">Paper trading with a live order book. Every account starts with <b>$100,000</b> in simulated cash. Market data is simulated.</p>
+      <label>Username<input id="lUser" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_.\-]+" autocomplete="username"></label>
+      <label>Password<input id="lPass" type="password" required minlength="6" autocomplete="current-password"></label>
+      <div class="login-actions">
+        <button type="submit" class="submit buy" data-mode="login">Log in</button>
+        <button type="submit" class="ghost" data-mode="register">Create account</button>
+      </div>
+      <p class="form-msg" id="loginMsg"></p>
+    </form>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script src="chart.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

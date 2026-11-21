@@ -1,0 +1,12 @@
+{
+  "name": "tradplat",
+  "version": "1.0.0",
+  "description": "A paper-trading platform: price-time priority matching engine, simulated liquidity and a live web trading terminal.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
