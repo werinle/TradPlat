@@ -15,6 +15,23 @@ npm test             # engine + HTTP API tests
 
 Requires Node 18+. There are no npm dependencies.
 
+## Persistence
+
+State is saved to `data/tradplat.json`. That covers accounts, logins, sessions, positions,
+open and stop orders, order history, fills, and price/candle history. A restart picks up where
+you left off: you stay logged in, and resting orders go back into the book with their original
+time priority.
+
+- Saves happen about 1 s after any account change, every 15 s for market data, and on
+  `Ctrl+C` / `SIGTERM`. A hard crash loses at most the last second.
+- Writes are atomic (temp file + rename), so a crash mid-save can't corrupt the file. If the
+  file is unreadable anyway, it's moved aside as `*.corrupt-<time>` and the server starts fresh.
+- Reserved cash and shares are recomputed from open orders on load instead of being trusted
+  from disk.
+- Session tokens are stored only as SHA-256 hashes, and passwords as scrypt hashes.
+- `DATA_FILE=/path/to/state.json npm start` picks another location. `DATA_FILE= npm start`
+  turns persistence off. Delete the file to reset everything.
+
 ## Features
 
 **Exchange engine** (`src/engine/`)
@@ -85,6 +102,7 @@ curl -s localhost:3000/api/orders -H "Authorization: Bearer $TOKEN" -H 'Content-
 ```
 src/
   config.js            symbols and starting cash
+  persistence.js       atomic JSON snapshots, debounced saving
   server.js            HTTP API, auth, SSE streaming, static files
   engine/
     OrderBook.js       sorted bid/ask book, depth aggregation
@@ -97,8 +115,7 @@ test/                  node:test suites
 ## Limitations
 
 This is a paper-trading simulator, not a brokerage:
-- State is **in memory**. Restarting the server resets all accounts and markets.
+- Persistence is a single JSON file, which suits one server process. Running several
+  instances, or keeping a full audit trail, would need a database or event log.
 - Passwords are hashed with scrypt, but there is no rate limiting, HTTPS or session expiry.
   Put it behind a TLS proxy before exposing it beyond localhost.
-- There is one process and no persistence layer. The engine is synchronous and deterministic,
-  so it would be straightforward to put an event log or database behind it.

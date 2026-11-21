@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { Exchange, OrderError } = require('./engine/Exchange');
 const { Simulator } = require('./engine/Simulator');
 const { SYMBOLS, STARTING_CASH } = require('./config');
+const { loadSnapshot, createSaver } = require('./persistence');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MIME = {
@@ -17,14 +18,43 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-function createPlatform({ simulate = true, tickMs = 800, pushMs = 400 } = {}) {
+/**
+ * @param {object} opts
+ * @param {string|null} opts.dataFile  JSON file to persist state to; null keeps everything in memory.
+ */
+function createPlatform({ simulate = true, tickMs = 800, pushMs = 400, dataFile = null } = {}) {
   const exchange = new Exchange({ symbols: SYMBOLS });
   const sim = new Simulator(exchange, { symbols: SYMBOLS });
-  sim.seedHistory();
 
   // ------------------------------------------------------------ auth store
   const users = new Map(); // username -> { salt, hash, accountId }
-  const sessions = new Map(); // token -> accountId
+  const sessions = new Map(); // sha256(token) -> accountId. Raw tokens are never stored.
+  const tokenKey = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+  // ----------------------------------------------------------- persistence
+  const snapshot = dataFile ? loadSnapshot(dataFile) : null;
+  if (snapshot) {
+    exchange.restore(snapshot.exchange);
+    for (const [name, u] of snapshot.users || []) users.set(name, u);
+    for (const [key, id] of snapshot.sessions || []) if (exchange.accounts.has(id)) sessions.set(key, id);
+    // Resume quoting where trading left off.
+    for (const [symbol, st] of sim.state) st.fair = exchange.market(symbol).last;
+    console.log(`Restored ${users.size} user(s) from ${dataFile}`);
+  } else {
+    sim.seedHistory();
+  }
+  const saver = dataFile
+    ? createSaver(dataFile, () => ({
+      version: 1,
+      exchange: exchange.serialize(),
+      users: [...users],
+      sessions: [...sessions],
+    }))
+    : null;
+  const requestSave = () => saver && saver.requestSave();
+  exchange.on('account', (id) => {
+    if (!exchange.accounts.get(id)?.unlimited) requestSave();
+  });
 
   function register(username, password) {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -32,6 +62,7 @@ function createPlatform({ simulate = true, tickMs = 800, pushMs = 400 } = {}) {
     const accountId = `U-${username}`;
     exchange.createAccount({ id: accountId, name: username, cash: STARTING_CASH });
     users.set(username, { salt, hash, accountId });
+    requestSave();
     return accountId;
   }
 
@@ -45,14 +76,15 @@ function createPlatform({ simulate = true, tickMs = 800, pushMs = 400 } = {}) {
 
   function issueToken(accountId) {
     const token = crypto.randomBytes(24).toString('base64url');
-    sessions.set(token, accountId);
+    sessions.set(tokenKey(token), accountId);
+    requestSave();
     return token;
   }
 
   function authFrom(req, url) {
     const h = req.headers.authorization || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : url.searchParams.get('token');
-    return token ? sessions.get(token) || null : null;
+    return token ? sessions.get(tokenKey(token)) || null : null;
   }
 
   // -------------------------------------------------- live streaming (SSE)
@@ -123,7 +155,8 @@ function createPlatform({ simulate = true, tickMs = 800, pushMs = 400 } = {}) {
 
     if (method === 'POST' && parts[0] === 'auth' && parts[1] === 'logout') {
       const h = req.headers.authorization || '';
-      sessions.delete(h.replace(/^Bearer /, ''));
+      sessions.delete(tokenKey(h.replace(/^Bearer /, '')));
+      requestSave();
       return json(res, 200, { ok: true });
     }
 
@@ -223,9 +256,17 @@ function createPlatform({ simulate = true, tickMs = 800, pushMs = 400 } = {}) {
       pushTimer = setInterval(push, pushMs);
       return server.listen(port, cb);
     },
+    /** Write state to disk immediately (no-op without a dataFile). */
+    save() {
+      if (saver) saver.saveNow();
+    },
     close(cb) {
       sim.stop();
       clearInterval(pushTimer);
+      if (saver) {
+        saver.saveNow();
+        saver.stop();
+      }
       for (const c of clients) c.res.end();
       server.close(cb);
     },
@@ -277,10 +318,24 @@ function readJson(req) {
 
 if (require.main === module) {
   const port = Number(process.env.PORT) || 3000;
-  const platform = createPlatform();
+  const dataFile = process.env.DATA_FILE === ''
+    ? null
+    : path.resolve(process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'tradplat.json'));
+  const platform = createPlatform({ dataFile });
   platform.listen(port, () => {
     console.log(`TradPlat running at http://localhost:${port}`);
+    console.log(dataFile ? `Saving state to ${dataFile}` : 'Persistence disabled (DATA_FILE is empty)');
   });
+  let stopping = false;
+  const shutdown = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`${signal} received, saving state…`);
+    platform.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref(); // don't hang on open connections
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 module.exports = { createPlatform };

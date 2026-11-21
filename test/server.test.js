@@ -67,3 +67,47 @@ test('simulator keeps markets two-sided and generates trades', () => {
     assert.ok(platform.exchange.market(s).trades.length > 0, `${s} has trades`);
   }
 });
+
+test('state survives a restart when a dataFile is configured', async (t) => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tradplat-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const dataFile = path.join(dir, 'state.json');
+
+  const start = async () => {
+    const p = createPlatform({ simulate: false, dataFile });
+    await new Promise((r) => p.listen(0, r));
+    p.sim.tick();
+    const base = `http://127.0.0.1:${p.server.address().port}/api`;
+    const call = async (method, route, body, token) => {
+      const res = await fetch(base + route, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, body: await res.json() };
+    };
+    return { p, call };
+  };
+
+  const first = await start();
+  const { token } = (await first.call('POST', '/auth/register', { username: 'keeper', password: 'secret123' })).body;
+  await first.call('POST', '/orders', { symbol: 'HLX', side: 'buy', type: 'market', qty: 7 }, token);
+  const resting = (await first.call('POST', '/orders', { symbol: 'HLX', side: 'buy', type: 'limit', price: 100, qty: 3 }, token)).body;
+  const before = (await first.call('GET', '/account', null, token)).body;
+  await new Promise((r) => first.p.close(r));
+
+  assert.ok(!fs.readFileSync(dataFile, 'utf8').includes(token), 'raw session tokens are not written to disk');
+
+  const second = await start();
+  t.after(() => new Promise((r) => second.p.close(r)));
+  const after = await second.call('GET', '/account', null, token);
+  assert.equal(after.status, 200, 'existing session token still works');
+  assert.equal(after.body.cash, before.cash);
+  assert.equal(after.body.positions[0].qty, 7);
+  assert.equal(after.body.openOrders[0].id, resting.id);
+  assert.equal((await second.call('POST', '/auth/login', { username: 'keeper', password: 'secret123' })).status, 200);
+  assert.equal((await second.call('DELETE', `/orders/${resting.id}`, null, token)).body.status, 'cancelled');
+});

@@ -528,6 +528,99 @@ class Exchange extends EventEmitter {
     if (reason !== 'user') this.emit('account', acct.id);
   }
 
+  // ------------------------------------------------------------ persistence
+
+  /**
+   * Plain-JSON state for every non-bot account, its orders, and market history.
+   * Simulation bots are excluded: they requote from scratch on startup.
+   */
+  serialize() {
+    const accounts = [];
+    const orders = [];
+    for (const a of this.accounts.values()) {
+      if (a.unlimited) continue;
+      accounts.push({
+        id: a.id,
+        name: a.name,
+        cash: a.cash,
+        realizedPnl: a.realizedPnl,
+        positions: [...a.positions].filter(([, p]) => p.qty !== 0).map(([s, p]) => [s, { qty: p.qty, avgCost: p.avgCost }]),
+        fills: a.fills,
+        orderIds: a.orderIds,
+        createdAt: a.createdAt,
+      });
+      for (const oid of a.orderIds) {
+        const o = this.orders.get(oid);
+        if (o) orders.push(o);
+      }
+    }
+    const markets = [...this.markets.values()].map((m) => ({
+      symbol: m.symbol,
+      last: m.last,
+      refPrice: m.refPrice,
+      high: m.high,
+      low: m.low,
+      volume: m.volume,
+      trades: m.trades,
+      candles: m.candles,
+    }));
+    return { version: 1, savedAt: this.now(), seq: this.seq, tradeSeq: this.tradeSeq, markets, accounts, orders };
+  }
+
+  /**
+   * Load state produced by serialize(). Call before any orders are placed.
+   * Reservations are recomputed from open orders rather than trusted from disk,
+   * and anything referring to a symbol no longer configured is dropped.
+   */
+  restore(data) {
+    if (!data || data.version !== 1) throw new Error('Unsupported snapshot version');
+    this.seq = Math.max(this.seq, data.seq || 0);
+    this.tradeSeq = Math.max(this.tradeSeq, data.tradeSeq || 0);
+    for (const m of data.markets || []) {
+      const cur = this.markets.get(m.symbol);
+      if (!cur) continue;
+      Object.assign(cur, {
+        last: m.last, refPrice: m.refPrice, high: m.high, low: m.low,
+        volume: m.volume, trades: m.trades || [], candles: m.candles || [],
+      });
+    }
+    for (const a of data.accounts || []) {
+      if (this.accounts.has(a.id)) continue;
+      const acct = this.createAccount({ id: a.id, name: a.name, cash: a.cash });
+      acct.realizedPnl = a.realizedPnl || 0;
+      acct.fills = (a.fills || []).filter((f) => this.markets.has(f.symbol));
+      acct.createdAt = a.createdAt;
+      for (const [symbol, p] of a.positions || []) {
+        if (this.markets.has(symbol)) acct.positions.set(symbol, { qty: p.qty, reserved: 0, avgCost: p.avgCost });
+      }
+    }
+    // Re-insert open orders in original sequence so time priority is preserved.
+    const orders = (data.orders || [])
+      .filter((o) => this.accounts.has(o.accountId) && this.markets.has(o.symbol))
+      .sort((x, y) => x.seq - y.seq);
+    for (const o of orders) {
+      const acct = this.accounts.get(o.accountId);
+      this.orders.set(o.id, o);
+      acct.orderIds.push(o.id);
+      if (!isOpen(o)) continue;
+      const remaining = o.qty - o.filled;
+      // Re-reserve exactly as placeOrder would have for the unfilled part.
+      if (o.side === 'sell') {
+        const p = this.position(acct, o.symbol);
+        if (p.qty - p.reserved < remaining) {
+          o.status = o.filled ? 'partially_filled_cancelled' : 'cancelled';
+          o.reason = 'Cancelled on restore: shares no longer available';
+          continue;
+        }
+        p.reserved += remaining;
+      } else if (o.price !== null) {
+        acct.reservedCash += o.price * remaining;
+      }
+      if (o.status === 'pending') this.stops.get(o.symbol).push(o);
+      else this.books.get(o.symbol).add(o);
+    }
+  }
+
   /** Drop closed orders from very long histories to bound memory. */
   _pruneOrders(acct) {
     const keep = [];

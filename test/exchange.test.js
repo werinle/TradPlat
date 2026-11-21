@@ -213,3 +213,56 @@ test('trades build OHLCV candles', () => {
   assert.equal(c[1].open, 98);
   assert.equal(c[1].close, 101);
 });
+
+test('serialize/restore round-trips accounts, resting orders and stops', () => {
+  const ex = setup();
+  ex.placeOrder('mm', lim('sell', 10000, 10));
+  ex.placeOrder('alice', lim('buy', 10000, 10));
+  const restingBuy1 = ex.placeOrder('alice', lim('buy', 9000, 5));
+  const restingBuy2 = ex.placeOrder('bob', lim('buy', 9000, 5)); // same price, later
+  const restingSell = ex.placeOrder('alice', lim('sell', 11000, 4));
+  const stop = ex.placeOrder('alice', { symbol: 'TEST', side: 'sell', type: 'stop', stopPrice: 8000, qty: 3 });
+
+  const saved = JSON.parse(JSON.stringify(ex.serialize()));
+  assert.ok(!saved.accounts.some((a) => a.id === 'mm'), 'bots are not persisted');
+
+  const ex2 = new Exchange({ symbols: [{ symbol: 'TEST', price: 1 }] });
+  ex2.createAccount({ id: 'mm', unlimited: true });
+  ex2.restore(saved);
+
+  const before = ex.accountSnapshot('alice');
+  const after = ex2.accountSnapshot('alice');
+  assert.deepEqual(after, before, 'account snapshot is identical after restore');
+  assert.deepEqual(ex2.depth('TEST'), ex.depth('TEST'));
+  assert.equal(ex2.market('TEST').last, 10000);
+  assert.equal(ex2.stops.get('TEST').length, 1);
+
+  // Time priority survives: alice's older 90.00 bid fills before bob's.
+  ex2.placeOrder('mm', { symbol: 'TEST', side: 'sell', type: 'market', qty: 5 });
+  assert.equal(ex2.orders.get(restingBuy1.id).status, 'filled');
+  assert.equal(ex2.orders.get(restingBuy2.id).status, 'open');
+
+  // New order ids continue after the restored sequence.
+  const next = ex2.placeOrder('bob', lim('buy', 100, 1));
+  assert.ok(Number(next.id.slice(1)) > Number(stop.id.slice(1)));
+
+  // Restored orders are still cancellable and release their reservations.
+  ex2.cancelOrder('alice', restingSell.id);
+  ex2.cancelOrder('alice', stop.id);
+  assert.equal(ex2.accountSnapshot('alice').positions[0].reserved, 0);
+});
+
+test('restore drops data for symbols that are no longer configured', () => {
+  const ex = new Exchange({ symbols: [{ symbol: 'AAA', price: 100 }, { symbol: 'BBB', price: 100 }] });
+  ex.createAccount({ id: 'u', cash: 100000 });
+  ex.createAccount({ id: 'mm', unlimited: true });
+  ex.placeOrder('mm', { symbol: 'BBB', side: 'sell', type: 'limit', price: 100, qty: 5 });
+  ex.placeOrder('u', { symbol: 'BBB', side: 'buy', type: 'market', qty: 5 });
+  ex.placeOrder('u', { symbol: 'AAA', side: 'buy', type: 'limit', price: 50, qty: 10 });
+  const ex2 = new Exchange({ symbols: [{ symbol: 'AAA', price: 100 }] });
+  ex2.restore(JSON.parse(JSON.stringify(ex.serialize())));
+  const a = ex2.accountSnapshot('u');
+  assert.equal(a.positions.length, 0);
+  assert.equal(a.reservedCash, 500);
+  assert.equal(a.openOrders.length, 1);
+});
